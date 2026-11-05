@@ -26,4 +26,4 @@ type Store interface {
 var ErrKeyNotFound = errors.New("ballo: key not found")
 
 // ErrEmptyKey is returned when a key is empty.
-var ErrEmptyKey = errors.New("ballo: key is empty")
+var ErrEmptyKey = errors.New("ballo: key is empty") // ponytail: keep for backward compatibility

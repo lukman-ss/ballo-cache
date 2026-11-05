@@ -53,6 +53,12 @@ operation immediately.
 - No background eviction; expired entries are removed lazily on access.
 - Only `context.Context` cancellation is respected; deadlines are not used for TTL.
 
+### Thread-safety notes
+
+- `Get` reads value and expiry atomically; prevents reading stale value then deleting fresh entry
+- All operations check closed status under the same lock as `Close`; no operations run after `Close` returns
+- TTL expiry re-checks entry identity under write lock before deletion
+
 ## Running tests
 
 ```bash

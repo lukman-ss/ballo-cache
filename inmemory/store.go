@@ -16,22 +16,21 @@ import (
 // No background goroutine; some expired keys remain until accessed or the
 // store is reset.
 type Store struct {
-	mu      sync.RWMutex
-	data    map[string]entry
-	expires map[string]time.Time
-	closed  bool
+	mu     sync.RWMutex
+	data   map[string]entry
+	closed bool
 }
 
 type entry struct {
-	value any
-	at    time.Time
+	value     any
+	expiry    time.Time
+	hasExpiry bool
 }
 
 // New returns a new Store.
 func New() *Store {
 	return &Store{
-		data:    make(map[string]entry),
-		expires: make(map[string]time.Time),
+		data: make(map[string]entry),
 	}
 }
 
@@ -39,16 +38,6 @@ func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.closed = true
-	return nil
-}
-
-func (s *Store) check() error {
-	s.mu.RLock()
-	closed := s.closed
-	s.mu.RUnlock()
-	if closed {
-		return errors.New("ballo: store closed")
-	}
 	return nil
 }
 
@@ -63,9 +52,6 @@ func (s *Store) Get(ctx context.Context, key string) (any, error) {
 	if err := s.validateKey(key); err != nil {
 		return nil, err
 	}
-	if err := s.check(); err != nil {
-		return nil, err
-	}
 
 	select {
 	case <-ctx.Done():
@@ -76,30 +62,34 @@ func (s *Store) Get(ctx context.Context, key string) (any, error) {
 	now := time.Now()
 
 	s.mu.RLock()
-	e, ok := s.data[key]
-	exp, hasExpiry := s.expires[key]
+	closed := s.closed
+	if !closed {
+		e, ok := s.data[key]
+		s.mu.RUnlock()
+
+		if !ok {
+			return nil, ballo.ErrKeyNotFound
+		}
+
+		if e.hasExpiry && now.After(e.expiry) {
+			s.mu.Lock()
+			// Re-check under write lock: entry might have been updated
+			if curr, exists := s.data[key]; exists && curr.value == e.value && curr.expiry == e.expiry && curr.hasExpiry == e.hasExpiry {
+				delete(s.data, key)
+			}
+			s.mu.Unlock()
+			return nil, ballo.ErrKeyNotFound
+		}
+
+		return e.value, nil
+	}
 	s.mu.RUnlock()
 
-	if !ok {
-		return nil, ballo.ErrKeyNotFound
-	}
-
-	if hasExpiry && now.After(exp) {
-		s.mu.Lock()
-		delete(s.data, key)
-		delete(s.expires, key)
-		s.mu.Unlock()
-		return nil, ballo.ErrKeyNotFound
-	}
-
-	return e.value, nil
+	return nil, errors.New("ballo: store closed")
 }
 
 func (s *Store) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	if err := s.validateKey(key); err != nil {
-		return err
-	}
-	if err := s.check(); err != nil {
 		return err
 	}
 
@@ -112,25 +102,24 @@ func (s *Store) Set(ctx context.Context, key string, value any, ttl time.Duratio
 	now := time.Now()
 
 	var exp time.Time
+	var hasExpiry bool
 	if ttl > 0 {
 		exp = now.Add(ttl)
+		hasExpiry = true
 	}
 
 	s.mu.Lock()
-	delete(s.expires, key)
-	s.data[key] = entry{value: value, at: now}
-	if ttl > 0 {
-		s.expires[key] = exp
+	if s.closed {
+		s.mu.Unlock()
+		return errors.New("ballo: store closed")
 	}
+	s.data[key] = entry{value: value, expiry: exp, hasExpiry: hasExpiry}
 	s.mu.Unlock()
 	return nil
 }
 
 func (s *Store) Delete(ctx context.Context, key string) error {
 	if err := s.validateKey(key); err != nil {
-		return err
-	}
-	if err := s.check(); err != nil {
 		return err
 	}
 
@@ -141,8 +130,11 @@ func (s *Store) Delete(ctx context.Context, key string) error {
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errors.New("ballo: store closed")
+	}
 	delete(s.data, key)
-	delete(s.expires, key)
 	s.mu.Unlock()
 	return nil
 }
