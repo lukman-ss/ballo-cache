@@ -305,6 +305,98 @@ func TestStore_ConcurrentGetSetDeleteClose(t *testing.T) {
 	wg.Wait()
 }
 
+func TestStore_ExpiredSliceValue(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+
+	val := []int{1, 2, 3}
+	_ = store.Set(ctx, "key", val, 1*time.Millisecond)
+
+	time.Sleep(10 * time.Millisecond)
+
+	_, err := store.Get(ctx, "key")
+	if err != ballo.ErrKeyNotFound {
+		t.Errorf("expected ErrKeyNotFound after TTL, got %v", err)
+	}
+}
+
+func TestStore_ExpiredMapValue(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+
+	val := map[string]int{"a": 1}
+	_ = store.Set(ctx, "key", val, 1*time.Millisecond)
+
+	time.Sleep(10 * time.Millisecond)
+
+	_, err := store.Get(ctx, "key")
+	if err != ballo.ErrKeyNotFound {
+		t.Errorf("expected ErrKeyNotFound after TTL, got %v", err)
+	}
+}
+
+func TestStore_ExpiredSliceValueConcurrentUpdate(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+
+	_ = store.Set(ctx, "key", []int{1, 2, 3}, 5*time.Millisecond)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// Concurrent update before expiration
+	go func() {
+		defer wg.Done()
+		time.Sleep(2 * time.Millisecond)
+		_ = store.Set(ctx, "key", []int{4, 5, 6}, 0)
+	}()
+
+	// Try to read after original expiration but before update completes
+	time.Sleep(10 * time.Millisecond)
+	val, err := store.Get(ctx, "key")
+	wg.Wait()
+
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+
+	// Value should be the updated one, not the expired slice
+	if v, ok := val.([]int); !ok || len(v) != 3 || v[0] != 4 {
+		t.Errorf("expected updated slice [4 5 6], got %v", val)
+	}
+}
+
+func TestStore_ExpiredMapValueConcurrentUpdate(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+
+	_ = store.Set(ctx, "key", map[string]int{"a": 1}, 5*time.Millisecond)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	// Concurrent update before expiration
+	go func() {
+		defer wg.Done()
+		time.Sleep(2 * time.Millisecond)
+		_ = store.Set(ctx, "key", map[string]int{"b": 2}, 0)
+	}()
+
+	// Try to read after original expiration but before update completes
+	time.Sleep(10 * time.Millisecond)
+	val, err := store.Get(ctx, "key")
+	wg.Wait()
+
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+
+	// Value should be the updated one, not the expired map
+	if v, ok := val.(map[string]int); !ok || len(v) != 1 || v["b"] != 2 {
+		t.Errorf("expected updated map {b:2}, got %v", val)
+	}
+}
+
 func keyForID(id, op int) string {
 	return fmt.Sprintf("k%02x%02x", id%256, op%256)
 }

@@ -58,6 +58,7 @@ operation immediately.
 - `Get` reads value and expiry atomically; prevents reading stale value then deleting fresh entry
 - All operations check closed status under the same lock as `Close`; no operations run after `Close` returns
 - TTL expiry re-checks entry identity under write lock before deletion
+- Entry identity uses atomic generation counter (avoids comparing slice/map values)
 
 ## Running tests
 

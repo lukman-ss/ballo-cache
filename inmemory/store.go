@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lukman-ss/ballo-cache"
@@ -25,7 +26,10 @@ type entry struct {
 	value     any
 	expiry    time.Time
 	hasExpiry bool
+	gen       uint64
 }
+
+var genCounter uint64
 
 // New returns a new Store.
 func New() *Store {
@@ -74,7 +78,7 @@ func (s *Store) Get(ctx context.Context, key string) (any, error) {
 		if e.hasExpiry && now.After(e.expiry) {
 			s.mu.Lock()
 			// Re-check under write lock: entry might have been updated
-			if curr, exists := s.data[key]; exists && curr.value == e.value && curr.expiry == e.expiry && curr.hasExpiry == e.hasExpiry {
+			if curr, exists := s.data[key]; exists && curr.gen == e.gen {
 				delete(s.data, key)
 			}
 			s.mu.Unlock()
@@ -113,7 +117,7 @@ func (s *Store) Set(ctx context.Context, key string, value any, ttl time.Duratio
 		s.mu.Unlock()
 		return errors.New("ballo: store closed")
 	}
-	s.data[key] = entry{value: value, expiry: exp, hasExpiry: hasExpiry}
+	s.data[key] = entry{value: value, expiry: exp, hasExpiry: hasExpiry, gen: atomic.AddUint64(&genCounter, 1)}
 	s.mu.Unlock()
 	return nil
 }
